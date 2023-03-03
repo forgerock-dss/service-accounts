@@ -10,11 +10,11 @@ TENANT=XXXXXX
 SERVICE_ACCOUNT_NAME="my_service_account"
 SERVICE_ACCOUNT_DESCRIPTION="A service account to interact with the IDM AM and ESVs"
 SERVICE_ACCOUNT_SCOPES='["fr:am:*","fr:idm:*","fr:idc:esv:*"]'
-SERVICE_ACCOUNT_ID_FILE="./service_account_id.txt"
+SERVICE_ACCOUNT_ID_FILE="./account_id.txt"
 SERVICE_REQUEST_JWT="./payload.json"
 SERVICE_REQUEST_SIGNED_JWT="./jwt.txt"
 REALM="alpha"
-IDM_ENDPOINT="https://${TENANT}/openidm/managed/${REALM}_user?_fields=userName,givenName,sn,mail,accountStatus&_prettyPrint=true&_queryFilter=true"
+IDM_ENDPOINT="https://${TENANT}/openidm/managed/${REALM}_user?_fields=userName,givenName,sn,mail,accountStatus&_prettyPrint=true&_queryFilter=true&_pageSize=1"
 AM_ENDPOINT="https://${TENANT}/am/json/realms/root/realms/${REALM}/realm-config/services/validation"
 
 # No need to modify these parameters:
@@ -66,6 +66,7 @@ createServiceAccount() {
 	jose jwk gen -i '{"alg": "RS256"}' -o ${PRIVATE_KEY_JWK}
 	cat ${PRIVATE_KEY_JWK} | jq -c 'del(.alg,.key_ops)' > ${PRIVATE_KEY_JWK}.2
 	mv ${PRIVATE_KEY_JWK}.2 ${PRIVATE_KEY_JWK}
+	chmod 600 ${PRIVATE_KEY_JWK}
 	echo "Service account private key JWK created called ${PRIVATE_KEY_JWK}"
 	JWK=`cat ${PRIVATE_KEY_JWK} | jq -c 'del(.d,.dq,.dp,.p,.q,.qi)'`
 	JWK_ESCAPED=$(echo ${JWK} | sed 's/"/\\"/g')
@@ -78,6 +79,7 @@ createServiceAccount() {
 	"${SERVICE_ACCOUNT_URL}"` 
 	echo ${SERVICE_ACCOUNT_NAME} | jq .
 	SERVICE_ACCOUNT_ID=`echo ${SERVICE_ACCOUNT_NAME} | jq -r ."_id" > ${SERVICE_ACCOUNT_ID_FILE}`
+	chmod 600 ${SERVICE_ACCOUNT_ID_FILE}
 	echo "Service Account _id value is:"
 	cat ${SERVICE_ACCOUNT_ID_FILE}
 }
@@ -86,12 +88,18 @@ createServiceAccount() {
 getAccessToken() {
 	echo "------------------------------------------"
 	if [ ! -f "${SERVICE_ACCOUNT_ID_FILE}" ]; then
-    		echo "${SERVICE_ACCOUNT_ID_FILE} file does not exist. Run the createServiceAccount function "
+    		echo "${SERVICE_ACCOUNT_ID_FILE} file does not exist. Run the createServiceAccount function"
 		exit 1
 	else
 		SERVICE_ACCOUNT_ID=`cat ${SERVICE_ACCOUNT_ID_FILE}`
 	fi
-	echo "Creating JWT for service account: ${SERVICE_ACCOUNT_NAME} with _id value: `cat ${SERVICE_ACCOUNT_ID_FILE}`"
+	if [ ! -f "${PRIVATE_KEY_JWK}" ]; then
+		echo "${PRIVATE_KEY_JWK} file does not exist. Run the createServiceAccount function"
+                exit 1
+        else
+                SERVICE_ACCOUNT_ID=`cat ${SERVICE_ACCOUNT_ID_FILE}`
+        fi
+	echo "Creating JWT for service account with _id value: ${SERVICE_ACCOUNT_ID}"
 	echo -n "{
 	\"iss\":\"${SERVICE_ACCOUNT_ID}\",
 	\"sub\":\"${SERVICE_ACCOUNT_ID}\",
@@ -99,8 +107,8 @@ getAccessToken() {
 	\"exp\":${EXP},
 	\"jti\":\"${JTI}\"
 	}" > ${SERVICE_REQUEST_JWT} 
-	echo "Signing JWT with private key from ${TENANT}.jwk"
-	jose jws sig -I ${SERVICE_REQUEST_JWT} -k ${TENANT}.jwk -s '{"alg":"RS256"}' -c -o ${SERVICE_REQUEST_SIGNED_JWT} 
+	echo "Signing JWT with private key from ${PRIVATE_KEY_JWK}"
+	jose jws sig -I ${SERVICE_REQUEST_JWT} -k ${PRIVATE_KEY_JWK} -s '{"alg":"RS256"}' -c -o ${SERVICE_REQUEST_SIGNED_JWT} 
 	echo "Generating access token from signed JWT"
 	ACCESS_TOKEN_OUTPUT=`curl -s \
 	--request POST ${AUD} \
@@ -111,12 +119,13 @@ getAccessToken() {
 	echo "Access token is:"
 	echo ${ACCESS_TOKEN_OUTPUT} | jq .
 	ACCESS_TOKEN=`echo ${ACCESS_TOKEN_OUTPUT} | jq -r .access_token`
+	rm ${SERVICE_REQUEST_JWT} ${SERVICE_REQUEST_SIGNED_JWT}
 }
 
 # Call an IDM API using a Service Account access token
 callIDM() {
 	echo "------------------------------------------"
-	echo "Calling this: ${IDM_ENDPOINT} IDM API in realm: ${REALM} using access token:"
+	echo "Calling this IDM Endpoint: ${IDM_ENDPOINT} IDM API in realm: ${REALM} using access token:"
 	echo ${ACCESS_TOKEN}
 	curl -s \
 	--request GET \
@@ -128,7 +137,7 @@ callIDM() {
 # Call am AM API using a Service Account acess token
 callAM() {
 	echo "------------------------------------------"
-	echo "Calling this: ${AM_ENDPOINT} AM API in realm: ${REALM} using access token:"
+	echo "Calling this AM Endpoint: ${AM_ENDPOINT} AM API in realm: ${REALM} using access token:"
         echo ${ACCESS_TOKEN}
         curl -s \
         --request GET \
